@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		654BCED52F6A0F0A0022DB3C /* RavonCore in Frameworks */ = {isa = PBXBuildFile; productRef = 654BCED42F6A0F0A0022DB3C /* RavonCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		654BCEC52F6A0EC50022DB3C /* RavonCourier.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RavonCourier.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				654BCED52F6A0F0A0022DB3C /* RavonCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = RavonCourier;
 			packageProductDependencies = (
+				654BCED42F6A0F0A0022DB3C /* RavonCore */,
 			);
 			productName = RavonCourier;
 			productReference = 654BCEC52F6A0EC50022DB3C /* RavonCourier.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = 654BCEBC2F6A0EC50022DB3C;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				654BCED32F6A0F0A0022DB3C /* XCRemoteSwiftPackageReference "ravon-core" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 654BCEC62F6A0EC50022DB3C /* Products */;
 			projectDirPath = "";
@@ -351,6 +360,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		654BCED32F6A0F0A0022DB3C /* XCRemoteSwiftPackageReference "ravon-core" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mmarufov/ravon-core.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		654BCED42F6A0F0A0022DB3C /* RavonCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 654BCED32F6A0F0A0022DB3C /* XCRemoteSwiftPackageReference "ravon-core" */;
+			productName = RavonCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 654BCEBD2F6A0EC50022DB3C /* Project object */;
 }
