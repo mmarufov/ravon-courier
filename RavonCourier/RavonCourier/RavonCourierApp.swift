@@ -15,7 +15,7 @@ struct RavonCourierApp: App {
         Task { @MainActor in
             RavonCore.configure(
                 supabaseURL: URL(string: "https://imcintoicxvmvzwpmxpr.supabase.co")!,
-                supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY"
+                supabaseAnonKey: "PASTE_LATER"
             )
         }
     }
