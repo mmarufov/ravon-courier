@@ -1,10 +1,3 @@
-//
-//  RavonCourierApp.swift
-//  RavonCourier
-//
-//  Created by Muhammad Marufov on 3/17/26.
-//
-
 import SwiftUI
 import Foundation
 import RavonCore
@@ -12,12 +5,10 @@ import RavonCore
 @main
 struct RavonCourierApp: App {
     init() {
-        Task { @MainActor in
-            RavonCore.configure(
-                supabaseURL: URL(string: "https://imcintoicxvmvzwpmxpr.supabase.co")!,
-                supabaseAnonKey: "PASTE_LATER"
-            )
-        }
+        RavonCore.configure(
+            supabaseURL: URL(string: "https://imcintoicxvmvzwpmxpr.supabase.co")!,
+            supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImltY2ludG9pY3h2bXZ6d3BteHByIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzNjEzOTYsImV4cCI6MjA4ODkzNzM5Nn0.Zt6rf00A9zayGExH4ZRwcZJY5W7z09XqR1S9rkwB-M4"
+        )
     }
 
     var body: some Scene {

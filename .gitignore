@@ -1,0 +1,21 @@
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.build/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+Packages/
+
+# macOS
+.DS_Store
+
+# Secrets
+.netrc
+
+# Tools
+.gstack/
+.vscode/
