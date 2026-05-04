@@ -263,6 +263,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Камера используется для подтверждения доставки фото у двери.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Местоположение нужно, чтобы передавать ваше движение клиенту во время доставки.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -307,6 +309,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Камера используется для подтверждения доставки фото у двери.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Местоположение нужно, чтобы передавать ваше движение клиенту во время доставки.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -366,7 +370,7 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mmarufov/ravon-core.git";
 			requirement = {
-				branch = main;
+				branch = "mmarufov/bucharest-v7";
 				kind = branch;
 			};
 		};

@@ -143,11 +143,22 @@ struct OrderOfferView: View {
             do {
                 try await orderService.claimOrder(order)
                 dashState = .activeDelivery(order)
-            } catch let error as ServiceError where error == .orderAlreadyClaimed {
-                showToast("Заказ уже занят другим курьером")
+            } catch let error as ServiceError {
+                if case .orderAlreadyClaimed = error {
+                    showToast("Заказ уже занят другим курьером")
+                } else if case .courierSuspended = error {
+                    showToast("Аккаунт приостановлен")
+                } else {
+                    showToast(error.errorDescription ?? "Ошибка")
+                }
                 fetchNextOffer()
             } catch {
-                showToast("Ошибка: \(error.localizedDescription)")
+                if let mapped = ServiceError.from(serverError: error),
+                   case .orderAlreadyClaimed = mapped {
+                    showToast("Заказ уже занят другим курьером")
+                } else {
+                    showToast("Ошибка: \(error.localizedDescription)")
+                }
                 fetchNextOffer()
             }
             isAccepting = false

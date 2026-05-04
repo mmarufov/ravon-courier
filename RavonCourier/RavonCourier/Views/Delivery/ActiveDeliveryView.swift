@@ -1,5 +1,7 @@
 import SwiftUI
 import MapKit
+import UIKit
+import Combine
 import RavonCore
 
 struct ActiveDeliveryView: View {
@@ -12,44 +14,115 @@ struct ActiveDeliveryView: View {
         self.onComplete = onComplete
     }
 
-    @State private var verificationCode = ""
-    @State private var showCodeError = false
-    @State private var isProcessing = false
+    // Pickup-code state (for .courierArrivedRestaurant)
+    @State private var pickupCode = ""
+    @State private var showPickupCodeError = false
+
+    // Delivery-code state (for .courierArrivedCustomer + handToMe)
+    @State private var deliveryCode = ""
+    @State private var showDeliveryCodeError = false
+    @State private var deliveryAttempts = 0
+
+    // Sheets
+    @State private var showDelayReasonSheet = false
+    @State private var showCancelSheet = false
+    @State private var showReportProblemSheet = false
+    @State private var showRestaurantDelaySheet = false
+    @State private var showPhotoPicker = false
     @State private var showChat = false
-    @State private var showCancelConfirm = false
+
+    // Working state
+    @State private var isProcessing = false
     @State private var unreadCount = 0
     @State private var completedOrder: Order?
+    @State private var toastMessage: String?
+
+    // Ticking clock for time-sensitive UI (no-show, banner refresh).
+    // Drives recomputation every second without polling the server.
+    @State private var now = Date()
+    private let secondTick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    // No-show countdown duration on the consumer no-show RPC (server side: 5 min).
+    private static let noShowGraceSeconds: TimeInterval = 5 * 60
+    // How long courier waits at customer before "no-show" button appears.
+    private static let noShowAvailableAfter: TimeInterval = 60
 
     var body: some View {
-        if let completed = completedOrder, orderService.activeOrder == nil {
-            completionCardView(for: completed)
-        } else if let order = orderService.activeOrder {
-            VStack(spacing: 0) {
-                mapSection(for: order)
-                deliveryCard(for: order)
-            }
-            .sheet(isPresented: $showChat) {
-                NavigationStack {
-                    ChatView(orderId: order.id)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Закрыть") {
-                                    showChat = false
-                                    // Reset unread count when chat is viewed
-                                    unreadCount = 0
+        Group {
+            if let completed = completedOrder, orderService.activeOrder == nil {
+                completionCardView(for: completed)
+            } else if let order = orderService.activeOrder {
+                VStack(spacing: 0) {
+                    mapSection(for: order)
+                    deliveryCard(for: order)
+                }
+                .sheet(isPresented: $showChat) {
+                    NavigationStack {
+                        ChatView(orderId: order.id)
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("Закрыть") {
+                                        showChat = false
+                                        unreadCount = 0
+                                    }
                                 }
                             }
-                        }
+                    }
+                    .presentationDetents([.medium, .large])
                 }
-                .presentationDetents([.medium, .large])
+                .sheet(isPresented: $showDelayReasonSheet) {
+                    DelayReasonSheet { reason in
+                        Task { await submitDelayExplanation(reason) }
+                    }
+                }
+                .sheet(isPresented: $showCancelSheet) {
+                    CourierCancelReasonSheet(mode: .cancel) { reason in
+                        Task { await submitCancel(reason) }
+                    }
+                }
+                .sheet(isPresented: $showReportProblemSheet) {
+                    CourierCancelReasonSheet(mode: .reportProblem) { reason in
+                        Task { await submitReportProblem(reason) }
+                    }
+                }
+                .sheet(isPresented: $showRestaurantDelaySheet) {
+                    RestaurantDelaySheet(cumulativeMinutes: order.restaurantDelayMin) { extra in
+                        Task { await submitRestaurantDelay(extra) }
+                    }
+                }
+                .sheet(isPresented: $showPhotoPicker) {
+                    PhotoProofPicker { image in
+                        Task { await submitDeliveryProof(image: image) }
+                    }
+                }
+                .task(id: order.id) {
+                    unreadCount = (try? await SupabaseService.shared.fetchUnreadCount(orderId: order.id)) ?? 0
+                    await orderService.refreshCancellationCooldown()
+                }
+                .onReceive(RealtimeService.shared.$lastChatMessage) { event in
+                    guard let event, event.message.orderId == order.id,
+                          event.message.senderId != AuthService.shared.userId,
+                          !event.message.isSystem else { return }
+                    unreadCount += 1
+                }
+                .onReceive(RealtimeService.shared.$lastOrderChange) { event in
+                    guard let event, event.orderId == order.id else { return }
+                    Task { await orderService.refreshActiveOrder() }
+                }
+                .onReceive(secondTick) { date in now = date }
             }
-            .task {
-                unreadCount = (try? await SupabaseService.shared.fetchUnreadCount(orderId: order.id)) ?? 0
-            }
-            .onReceive(RealtimeService.shared.$lastChatMessage) { event in
-                guard let event, event.message.orderId == order.id,
-                      event.message.senderId != AuthService.shared.userId else { return }
-                unreadCount += 1
+        }
+        .overlay(alignment: .top) {
+            if let toastMessage {
+                Text(toastMessage)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(Color.red, in: Capsule())
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
     }
@@ -130,13 +203,17 @@ struct ActiveDeliveryView: View {
         .frame(height: 220)
     }
 
-    // MARK: - Card
+    // MARK: - Delivery Card
 
     private func deliveryCard(for order: Order) -> some View {
         VStack(spacing: 12) {
+            // Banners always at the top of the card.
+            delayBannerStack(for: order)
+                .padding(.horizontal)
+                .padding(.top, 12)
+
             courierProgressBar(for: order.status)
                 .padding(.horizontal)
-                .padding(.top, 16)
 
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -188,41 +265,74 @@ struct ActiveDeliveryView: View {
             }
             .padding(.horizontal)
 
+            // Pickup code (.courierArrivedRestaurant)
             if order.status == .courierArrivedRestaurant {
-                verificationCodeInput
+                pickupCodeInput
+                restaurantDelayChip(for: order)
+            }
+
+            // Delivery completion UI (.courierArrivedCustomer)
+            if order.status == .courierArrivedCustomer {
+                deliveryCompletionUI(for: order)
+                noShowSection(for: order)
+                    .padding(.horizontal)
             }
 
             actionButtons(for: order)
                 .padding(.horizontal)
 
-            Button(role: .destructive) {
-                showCancelConfirm = true
-            } label: {
-                Text("Отменить доставку")
-                    .font(.subheadline)
-            }
-            .padding(.bottom)
-            .confirmationDialog(
-                "Отменить доставку?",
-                isPresented: $showCancelConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Отменить доставку", role: .destructive) {
-                    isProcessing = true
-                    Task {
-                        await orderService.cancelActiveOrder()
-                        isProcessing = false
-                        onComplete()
-                    }
-                }
-                Button("Нет", role: .cancel) {}
-            } message: {
-                Text("Заказ будет снят с вас и вернётся в общий пул")
-            }
+            cancelOrReportButton(for: order)
+                .padding(.bottom, 12)
         }
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .shadow(radius: 5, y: -2)
+    }
+
+    // MARK: - Delay Banner
+
+    @ViewBuilder
+    private func delayBannerStack(for order: Order) -> some View {
+        if order.delayWarningActive {
+            Button { showDelayReasonSheet = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.black)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Что происходит? Расскажите клиенту.")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.black)
+                        Text("Нажмите, чтобы выбрать причину")
+                            .font(.caption)
+                            .foregroundStyle(.black.opacity(0.7))
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(.black.opacity(0.6))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.yellow)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+        }
+        if order.courierNoShowWarnedAt != nil {
+            HStack(spacing: 8) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .foregroundStyle(.red)
+                Text("Внимание: вы можете быть отключены")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.red)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.red.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
     }
 
     // MARK: - Progress Bar
@@ -329,39 +439,136 @@ struct ActiveDeliveryView: View {
         }
     }
 
-    // MARK: - Verification Code
+    // MARK: - Pickup Code Input
 
-    private var verificationCodeInput: some View {
+    private var pickupCodeInput: some View {
         VStack(spacing: 8) {
             Text("Введите код подтверждения")
                 .font(.subheadline)
                 .fontWeight(.medium)
 
-            HStack(spacing: 12) {
-                TextField("0000", text: $verificationCode)
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.center)
-                    .font(.title2.monospaced())
-                    .frame(width: 120)
-                    .padding(.vertical, 8)
-                    .background(Color(.systemGray6))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .onChange(of: verificationCode) { _, newValue in
-                        if newValue.count > 4 {
-                            verificationCode = String(newValue.prefix(4))
-                        }
-                        verificationCode = newValue.filter(\.isNumber)
-                        showCodeError = false
-                    }
-            }
+            TextField("0000", text: $pickupCode)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.center)
+                .font(.title2.monospaced())
+                .frame(width: 120)
+                .padding(.vertical, 8)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .onChange(of: pickupCode) { _, newValue in
+                    pickupCode = String(newValue.filter(\.isNumber).prefix(4))
+                    showPickupCodeError = false
+                }
 
-            if showCodeError {
-                Text("Неверный код подтверждения")
+            if showPickupCodeError {
+                Text("Неверный код. Попросите ресторан назвать ещё раз.")
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
             }
         }
         .padding(.horizontal)
+    }
+
+    // MARK: - Restaurant-delay chip
+
+    @ViewBuilder
+    private func restaurantDelayChip(for order: Order) -> some View {
+        let cumulative = order.restaurantDelayMin
+        let capped = cumulative >= 30
+        Button {
+            if !capped { showRestaurantDelaySheet = true }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .foregroundStyle(capped ? .secondary : Color.orange)
+                Text(cumulative > 0 ? "Ресторан задерживает (+\(cumulative) мин)" : "Ресторан задерживает")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundStyle(capped ? .secondary : .primary)
+                Spacer()
+                if !capped {
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .disabled(capped)
+        .padding(.horizontal)
+    }
+
+    // MARK: - Delivery completion (handToMe / leaveAtDoor)
+
+    @ViewBuilder
+    private func deliveryCompletionUI(for order: Order) -> some View {
+        switch order.deliveryMode {
+        case .handToMe:
+            DeliveryCodePadView(
+                code: $deliveryCode,
+                attempts: $deliveryAttempts,
+                showError: $showDeliveryCodeError
+            )
+        case .leaveAtDoor:
+            HStack(spacing: 10) {
+                Image(systemName: "camera.fill")
+                    .foregroundStyle(.blue)
+                Text("Оставить у двери — нажмите «Доставлено» и сделайте фото")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal)
+        }
+    }
+
+    // MARK: - No-show button + countdown
+
+    @ViewBuilder
+    private func noShowSection(for order: Order) -> some View {
+        if let started = order.noShowStartedAt {
+            // Countdown active.
+            let elapsed = now.timeIntervalSince(started)
+            let remaining = max(0, Self.noShowGraceSeconds - elapsed)
+            HStack(spacing: 8) {
+                Image(systemName: "hourglass")
+                    .foregroundStyle(.orange)
+                Text("Клиент не отвечает — \(formatMMSS(remaining))")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.orange.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else if let arrived = order.arrivedAtCustomerAt,
+                  now.timeIntervalSince(arrived) >= Self.noShowAvailableAfter {
+            Button {
+                Task { await reportNoShow() }
+            } label: {
+                Label("Клиент не отвечает", systemImage: "person.fill.questionmark")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.orange.opacity(0.12))
+                    .foregroundStyle(.orange)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+            .disabled(isProcessing)
+        }
     }
 
     // MARK: - Action Buttons
@@ -391,12 +598,18 @@ struct ActiveDeliveryView: View {
                 isProcessing = true
                 Task {
                     do {
-                        try await orderService.pickUpOrder(verificationCode: verificationCode)
-                        verificationCode = ""
-                        showCodeError = false
-                    } catch let error as ServiceError where error == .invalidVerificationCode {
-                        showCodeError = true
-                    } catch {}
+                        try await orderService.pickUpOrder(pickupCode: pickupCode)
+                        pickupCode = ""
+                        showPickupCodeError = false
+                    } catch let error as ServiceError {
+                        if case .invalidVerificationCode = error {
+                            showPickupCodeError = true
+                        } else {
+                            showToast(error.errorDescription ?? "Ошибка")
+                        }
+                    } catch {
+                        showToast(error.localizedDescription)
+                    }
                     isProcessing = false
                 }
             } label: {
@@ -407,7 +620,7 @@ struct ActiveDeliveryView: View {
             .buttonStyle(.borderedProminent)
             .tint(.ravonRed)
             .controlSize(.large)
-            .disabled(verificationCode.count != 4 || isProcessing)
+            .disabled(pickupCode.count != 4 || isProcessing)
 
         case .pickedUp:
             Button {
@@ -444,16 +657,9 @@ struct ActiveDeliveryView: View {
             .disabled(isProcessing)
 
         case .courierArrivedCustomer:
+            // Single "Доставлено" button — branches by deliveryMode at call site.
             Button {
-                isProcessing = true
-                Task {
-                    completedOrder = orderService.activeOrder
-                    await orderService.deliverOrder()
-                    if orderService.errorMessage != nil {
-                        completedOrder = nil
-                    }
-                    isProcessing = false
-                }
+                Task { await completeDelivery(order) }
             } label: {
                 Label("Доставлено", systemImage: "checkmark.circle.fill")
                     .fontWeight(.semibold)
@@ -462,14 +668,194 @@ struct ActiveDeliveryView: View {
             .buttonStyle(.borderedProminent)
             .tint(.green)
             .controlSize(.large)
-            .disabled(isProcessing)
+            .disabled(isProcessing || !canCompleteDelivery(order))
 
         default:
             EmptyView()
         }
     }
 
+    // MARK: - Cancel / Report-Problem button
+
+    @ViewBuilder
+    private func cancelOrReportButton(for order: Order) -> some View {
+        if order.status.courierCanCancel {
+            let onCooldown = orderService.isCancelOnCooldown
+            VStack(spacing: 4) {
+                Button(role: .destructive) {
+                    showCancelSheet = true
+                } label: {
+                    Text("Отменить заказ")
+                        .font(.subheadline)
+                }
+                .disabled(onCooldown || isProcessing)
+                if onCooldown, let until = orderService.cancelCooldownUntil {
+                    Text("Восстановится в \(formatHHMM(until))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else if !order.status.isTerminal &&
+                  (order.status == .pickedUp ||
+                   order.status == .delivering ||
+                   order.status == .courierArrivedCustomer) {
+            Button {
+                showReportProblemSheet = true
+            } label: {
+                Label("Сообщить о проблеме", systemImage: "exclamationmark.bubble")
+                    .font(.subheadline)
+            }
+            .disabled(isProcessing)
+        }
+    }
+
     // MARK: - Helpers
+
+    private func canCompleteDelivery(_ order: Order) -> Bool {
+        switch order.deliveryMode {
+        case .handToMe:   return deliveryCode.count == 4
+        case .leaveAtDoor: return true
+        }
+    }
+
+    private func completeDelivery(_ order: Order) async {
+        isProcessing = true
+        defer { isProcessing = false }
+        switch order.deliveryMode {
+        case .handToMe:
+            do {
+                completedOrder = order
+                try await orderService.deliverOrderHandToMe(deliveryCode: deliveryCode)
+                deliveryCode = ""
+                showDeliveryCodeError = false
+                deliveryAttempts = 0
+            } catch let error as ServiceError {
+                completedOrder = nil
+                if case .wrongDeliveryCode = error {
+                    deliveryAttempts += 1
+                    showDeliveryCodeError = true
+                } else if let mapped = ServiceError.from(serverError: error), case .wrongDeliveryCode = mapped {
+                    deliveryAttempts += 1
+                    showDeliveryCodeError = true
+                } else {
+                    showToast(error.errorDescription ?? "Ошибка")
+                }
+            } catch {
+                completedOrder = nil
+                if let mapped = ServiceError.from(serverError: error), case .wrongDeliveryCode = mapped {
+                    deliveryAttempts += 1
+                    showDeliveryCodeError = true
+                } else {
+                    showToast(error.localizedDescription)
+                }
+            }
+        case .leaveAtDoor:
+            showPhotoPicker = true
+        }
+    }
+
+    private func submitDeliveryProof(image: UIImage) async {
+        guard let order = orderService.activeOrder else { return }
+        guard let data = DeliveryProofImage.compress(image) else {
+            showToast("Не удалось сжать фото — попробуйте ещё раз")
+            return
+        }
+        isProcessing = true
+        defer { isProcessing = false }
+        do {
+            completedOrder = order
+            try await orderService.deliverOrderLeaveAtDoor(jpegData: data)
+        } catch let error as ServiceError {
+            completedOrder = nil
+            if case .missingProofImage = error {
+                showPhotoPicker = true
+            } else if case .imageTooLarge = error {
+                showToast("Фото слишком большое — снимите ещё раз")
+            } else {
+                showToast(error.errorDescription ?? "Ошибка")
+            }
+        } catch {
+            completedOrder = nil
+            if let mapped = ServiceError.from(serverError: error), case .missingProofImage = mapped {
+                showPhotoPicker = true
+            } else {
+                showToast(error.localizedDescription)
+            }
+        }
+    }
+
+    private func submitDelayExplanation(_ reason: CourierDelayReason) async {
+        do {
+            try await orderService.explainDelay(reason: reason, freeForm: nil)
+        } catch {
+            showToast(error.localizedDescription)
+        }
+    }
+
+    private func submitCancel(_ reason: CancellationReason) async {
+        isProcessing = true
+        defer { isProcessing = false }
+        do {
+            try await orderService.cancelByCourier(reason: reason)
+            await orderService.refreshCancellationCooldown()
+            onComplete()
+        } catch let error as ServiceError {
+            if case .courierCancelCooldown = error {
+                showToast("Слишком много отмен. Подождите.")
+                await orderService.refreshCancellationCooldown()
+            } else {
+                showToast(error.errorDescription ?? "Ошибка")
+            }
+        } catch {
+            if let mapped = ServiceError.from(serverError: error), case .courierCancelCooldown = mapped {
+                showToast("Слишком много отмен. Подождите.")
+                await orderService.refreshCancellationCooldown()
+            } else {
+                showToast(error.localizedDescription)
+            }
+        }
+    }
+
+    private func submitReportProblem(_ reason: CancellationReason) async {
+        isProcessing = true
+        defer { isProcessing = false }
+        do {
+            try await orderService.reportProblemPostPickup(reason: reason, freeForm: nil)
+            showToast("Поддержка получит сообщение")
+        } catch {
+            showToast(error.localizedDescription)
+        }
+    }
+
+    private func submitRestaurantDelay(_ extra: Int) async {
+        do {
+            try await orderService.reportRestaurantDelay(extraMinutes: extra)
+        } catch {
+            showToast(error.localizedDescription)
+        }
+    }
+
+    private func reportNoShow() async {
+        isProcessing = true
+        defer { isProcessing = false }
+        do {
+            try await orderService.reportCustomerNoShow()
+        } catch {
+            showToast(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Toast
+
+    private func showToast(_ message: String) {
+        withAnimation { toastMessage = message }
+        Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            withAnimation { toastMessage = nil }
+        }
+    }
+
+    // MARK: - Display helpers
 
     private func statusText(for status: OrderStatus) -> String {
         switch status {
@@ -491,6 +877,17 @@ struct ActiveDeliveryView: View {
             .background(status.statusColor.opacity(0.15))
             .foregroundStyle(status.statusColor)
             .clipShape(Capsule())
+    }
+
+    private func formatMMSS(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    private func formatHHMM(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: date)
     }
 }
 
