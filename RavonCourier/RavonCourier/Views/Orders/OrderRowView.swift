@@ -176,22 +176,21 @@ struct OrderDetailSheet: View {
             do {
                 try await OrderService.shared.claimOrder(order)
                 dismiss()
-            } catch let error as ServiceError where error == .orderAlreadyClaimed {
-                withAnimation {
-                    claimError = "Заказ уже занят"
-                }
-                try? await Task.sleep(for: .seconds(2))
-                withAnimation {
-                    claimError = nil
-                }
             } catch {
-                withAnimation {
-                    claimError = error.localizedDescription
-                }
+                let message: String = {
+                    if let svc = error as? ServiceError {
+                        if case .orderAlreadyClaimed = svc { return "Заказ уже занят" }
+                        return svc.errorDescription ?? error.localizedDescription
+                    }
+                    if let mapped = ServiceError.from(serverError: error),
+                       case .orderAlreadyClaimed = mapped {
+                        return "Заказ уже занят"
+                    }
+                    return error.localizedDescription
+                }()
+                withAnimation { claimError = message }
                 try? await Task.sleep(for: .seconds(2))
-                withAnimation {
-                    claimError = nil
-                }
+                withAnimation { claimError = nil }
             }
             isClaiming = false
         }

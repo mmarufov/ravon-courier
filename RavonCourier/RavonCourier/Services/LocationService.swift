@@ -13,8 +13,6 @@ final class LocationService: NSObject {
 
     private let locationManager = CLLocationManager()
     private var isOnline = false
-    private var lastBroadcastTime: Date = .distantPast
-    private static let broadcastInterval: TimeInterval = 5
 
     private override init() {
         super.init()
@@ -37,32 +35,18 @@ final class LocationService: NSObject {
 
     func setOnline(_ online: Bool) {
         isOnline = online
+        if !online {
+            CourierLocationStreamer.shared.reset()
+        }
     }
 
     func openInMaps(destination: CLLocationCoordinate2D, name: String) {
-        let placemark = MKPlacemark(coordinate: destination)
-        let mapItem = MKMapItem(placemark: placemark)
+        let location = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+        let mapItem = MKMapItem(location: location, address: nil)
         mapItem.name = name
         mapItem.openInMaps(launchOptions: [
             MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
         ])
-    }
-
-    private func broadcastLocationIfNeeded(_ location: CLLocation) {
-        guard isOnline else { return }
-
-        let now = Date()
-        guard now.timeIntervalSince(lastBroadcastTime) >= Self.broadcastInterval else { return }
-        lastBroadcastTime = now
-
-        Task {
-            try? await SupabaseService.shared.updateCourierLocation(
-                latitude: location.coordinate.latitude,
-                longitude: location.coordinate.longitude,
-                heading: location.course >= 0 ? location.course : nil,
-                speed: location.speed >= 0 ? location.speed : nil
-            )
-        }
     }
 }
 
@@ -70,7 +54,16 @@ extension LocationService: @preconcurrency CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         currentLocation = location.coordinate
-        broadcastLocationIfNeeded(location)
+        guard isOnline else { return }
+        Task {
+            await CourierLocationStreamer.shared.submit(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                accuracyMeters: location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : nil,
+                heading: location.course >= 0 ? location.course : nil,
+                speed: location.speed >= 0 ? location.speed : nil
+            )
+        }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

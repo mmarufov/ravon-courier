@@ -8,9 +8,17 @@ final class OrderService {
     static let shared = OrderService()
 
     var availableOrders: [Order] = []
-    var activeOrder: Order?
+    var activeOrder: Order? {
+        didSet {
+            CourierLocationStreamer.shared.setActiveOrderStatus(activeOrder?.status)
+        }
+    }
     var isLoading = false
     var errorMessage: String?
+
+    /// Cooldown state — populated by `refreshCancellationCooldown()` on screen appear.
+    var recentCancelCount: Int = 0
+    var cancelCooldownUntil: Date?
 
     private init() {}
 
@@ -25,6 +33,23 @@ final class OrderService {
             }
         } catch {
             // Non-critical — don't block the UI
+        }
+    }
+
+    /// Re-fetch the active order (used after realtime status change).
+    func refreshActiveOrder() async {
+        guard let order = activeOrder else { return }
+        do {
+            let refreshed = try await SupabaseService.shared.fetchOrder(id: order.id)
+            if refreshed.status.isTerminal {
+                activeOrder = nil
+                await RealtimeService.shared.unsubscribeFromOrders()
+                await EarningsService.shared.fetchEarnings()
+            } else {
+                activeOrder = refreshed
+            }
+        } catch {
+            // Silent — next event will retry
         }
     }
 
@@ -76,9 +101,9 @@ final class OrderService {
         }
     }
 
-    func pickUpOrder(verificationCode: String) async throws {
+    func pickUpOrder(pickupCode: String) async throws {
         guard let order = activeOrder else { return }
-        try await SupabaseService.shared.pickUpOrder(orderId: order.id, verificationCode: verificationCode)
+        try await SupabaseService.shared.pickUpOrder(orderId: order.id, pickupCode: pickupCode)
         activeOrder = try await SupabaseService.shared.fetchOrder(id: order.id)
     }
 
@@ -102,28 +127,84 @@ final class OrderService {
         }
     }
 
-    func deliverOrder() async {
+    /// Hand-to-me delivery — verifies consumer's delivery code.
+    func deliverOrderHandToMe(deliveryCode: String) async throws {
         guard let order = activeOrder else { return }
+        try await SupabaseService.shared.deliverOrder(orderId: order.id, deliveryCode: deliveryCode)
+        activeOrder = nil
+        await RealtimeService.shared.unsubscribeFromOrders()
+        await EarningsService.shared.fetchEarnings()
+    }
+
+    /// Leave-at-door delivery — uploads photo proof first, then completes.
+    func deliverOrderLeaveAtDoor(jpegData: Data) async throws {
+        guard let order = activeOrder else { return }
+        let path = try await SupabaseService.shared.uploadDeliveryProof(orderId: order.id, jpegData: jpegData)
+        try await SupabaseService.shared.deliverOrder(orderId: order.id, proofUrl: path)
+        activeOrder = nil
+        await RealtimeService.shared.unsubscribeFromOrders()
+        await EarningsService.shared.fetchEarnings()
+    }
+
+    // MARK: - Cancel / Problem Reporting
+
+    /// Pre-pickup courier-initiated cancel via whitelisted reason.
+    func cancelByCourier(reason: CancellationReason) async throws {
+        guard let order = activeOrder else { return }
+        try await SupabaseService.shared.cancelOrderByCourier(orderId: order.id, reason: reason)
+        activeOrder = nil
+        await RealtimeService.shared.unsubscribeFromOrders()
+        await EarningsService.shared.fetchEarnings()
+    }
+
+    /// Post-pickup: status doesn't change; system messages the consumer.
+    func reportProblemPostPickup(reason: CancellationReason, freeForm: String?) async throws {
+        guard let order = activeOrder else { return }
+        try await SupabaseService.shared.reportProblemPostPickup(
+            orderId: order.id, reason: reason, freeForm: freeForm
+        )
+    }
+
+    // MARK: - Delay Ladder
+
+    func explainDelay(reason: CourierDelayReason, freeForm: String?) async throws {
+        guard let order = activeOrder else { return }
+        try await SupabaseService.shared.explainDelay(
+            orderId: order.id, reason: reason, freeForm: freeForm
+        )
+        activeOrder = try await SupabaseService.shared.fetchOrder(id: order.id)
+    }
+
+    // MARK: - No-show + Restaurant delay
+
+    func reportCustomerNoShow() async throws {
+        guard let order = activeOrder else { return }
+        try await SupabaseService.shared.reportCustomerNoShow(orderId: order.id)
+        activeOrder = try await SupabaseService.shared.fetchOrder(id: order.id)
+    }
+
+    func reportRestaurantDelay(extraMinutes: Int) async throws {
+        guard let order = activeOrder else { return }
+        try await SupabaseService.shared.reportRestaurantDelay(
+            orderId: order.id, extraMinutes: extraMinutes
+        )
+        activeOrder = try await SupabaseService.shared.fetchOrder(id: order.id)
+    }
+
+    // MARK: - Cancel Cooldown
+
+    func refreshCancellationCooldown() async {
         do {
-            try await SupabaseService.shared.deliverOrder(orderId: order.id)
-            activeOrder = nil
-            await RealtimeService.shared.unsubscribeFromOrders()
-            await EarningsService.shared.fetchEarnings()
+            let status = try await SupabaseService.shared.fetchCancellationCooldownStatus()
+            recentCancelCount = status.recentCancels
+            cancelCooldownUntil = status.cooldownUntil
         } catch {
-            errorMessage = error.localizedDescription
+            recentCancelCount = 0
+            cancelCooldownUntil = nil
         }
     }
 
-    // MARK: - Cancel Active Order
-
-    func cancelActiveOrder() async {
-        guard let order = activeOrder else { return }
-        do {
-            try await SupabaseService.shared.cancelOrder(orderId: order.id, reason: nil)
-            activeOrder = nil
-            await RealtimeService.shared.unsubscribeFromOrders()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    var isCancelOnCooldown: Bool {
+        recentCancelCount >= 3 && (cancelCooldownUntil ?? .distantPast) > Date()
     }
 }

@@ -3,16 +3,15 @@ import RavonCore
 import Auth
 
 struct ProfileView: View {
-    @State private var profile: Profile?
-    @State private var isLoading = true
+    private var profileService = ProfileService.shared
     @ObservedObject private var auth = AuthService.shared
 
     var body: some View {
         NavigationStack {
             Group {
-                if let profile {
+                if let profile = profileService.profile {
                     profileContent(profile)
-                } else if isLoading {
+                } else if profileService.isLoading {
                     ProgressView("Загрузка профиля...")
                 } else {
                     Text("Не удалось загрузить профиль")
@@ -22,10 +21,10 @@ struct ProfileView: View {
             .navigationTitle("Профиль")
         }
         .task {
-            do {
-                profile = try await SupabaseService.shared.fetchProfile()
-            } catch {}
-            isLoading = false
+            await profileService.fetchProfile()
+        }
+        .refreshable {
+            await profileService.fetchProfile()
         }
     }
 
@@ -48,6 +47,25 @@ struct ProfileView: View {
                     }
                 }
                 .padding(.vertical, 4)
+            }
+
+            // Suspension warning
+            if profile.isSuspended, let until = profile.isSuspendedUntil {
+                Section {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.octagon.fill")
+                            .foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Аккаунт приостановлен")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.red)
+                            Text("До \(until.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
 
             // Info

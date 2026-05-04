@@ -73,11 +73,13 @@ struct LoginView: View {
                 NavigationLink {
                     RegisterView(authService: authService)
                 } label: {
-                    Text("Нет аккаунта? ")
-                        .foregroundStyle(.secondary)
-                    + Text("Зарегистрироваться")
-                        .foregroundStyle(Color.ravonRed)
-                        .fontWeight(.medium)
+                    HStack(spacing: 4) {
+                        Text("Нет аккаунта?")
+                            .foregroundStyle(.secondary)
+                        Text("Зарегистрироваться")
+                            .foregroundStyle(Color.ravonRed)
+                            .fontWeight(.medium)
+                    }
                 }
                 .font(.subheadline)
 

@@ -17,8 +17,9 @@ final class EarningsService {
         isLoading = true
         do {
             let period = mapPeriod(selectedPeriod)
-            earnings = try await SupabaseService.shared.fetchEarnings(period: period)
-            summary = try await SupabaseService.shared.fetchEarningsSummary(period: period)
+            let rows = try await SupabaseService.shared.fetchEarnings(period: period)
+            earnings = rows
+            summary = computeSummary(rows)
         } catch {
             // Silently handle — earnings screen will show empty state
         }
@@ -39,5 +40,18 @@ final class EarningsService {
         case .month: .month
         case .all: .all
         }
+    }
+
+    /// Includes `totalClawbacks` (sum of magnitudes for negative-tier rows),
+    /// which the shared `fetchEarningsSummary` helper doesn't compute.
+    private func computeSummary(_ rows: [CourierEarning]) -> EarningsSummary {
+        let clawbacks = rows.filter(\.isClawback).reduce(0.0) { $0 + abs($1.totalEarned) }
+        return EarningsSummary(
+            totalDeliveries: rows.count,
+            totalDeliveryFees: rows.reduce(0) { $0 + $1.deliveryFee },
+            totalTips: rows.reduce(0) { $0 + $1.tipAmount },
+            totalEarned: rows.reduce(0) { $0 + $1.totalEarned },
+            totalClawbacks: clawbacks
+        )
     }
 }

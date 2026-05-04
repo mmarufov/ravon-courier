@@ -38,10 +38,13 @@ struct HomeView: View {
     private var orderService = OrderService.shared
     private var locationService = LocationService.shared
     private var earningsService = EarningsService.shared
+    private var profileService = ProfileService.shared
 
     var body: some View {
         ZStack {
-            if case .activeDelivery = dashState {
+            if profileService.isSuspended {
+                SuspensionBlocker(until: profileService.suspendedUntil)
+            } else if case .activeDelivery = dashState {
                 ActiveDeliveryView(onComplete: handleDeliveryComplete)
             } else {
                 mapView
@@ -73,8 +76,11 @@ struct HomeView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: dashState.stateKey)
         .task {
+            await profileService.fetchProfile()
             await earningsService.fetchEarnings()
-            await restoreState()
+            if !profileService.isSuspended {
+                await restoreState()
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
@@ -315,6 +321,13 @@ struct HomeView: View {
     // MARK: - Online/Offline Actions
 
     private func goOnline() async {
+        // Re-fetch profile to catch a fresh suspension before going online.
+        await profileService.fetchProfile()
+        if profileService.isSuspended {
+            onlineErrorMessage = "Аккаунт приостановлен — выход на линию недоступен"
+            showOnlineError = true
+            return
+        }
         isGoingOnline = true
         do {
             locationService.requestPermission()
@@ -397,7 +410,7 @@ struct HomeView: View {
     }
 
     private func handleForegroundReconnect() async {
-        guard let uid = AuthService.shared.userId else { return }
+        guard AuthService.shared.userId != nil else { return }
         // Check if an order was assigned while backgrounded
         await orderService.fetchActiveOrder()
         if let activeOrder = orderService.activeOrder {
