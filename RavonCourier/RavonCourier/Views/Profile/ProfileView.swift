@@ -1,6 +1,5 @@
 import SwiftUI
 import RavonCore
-import Auth
 
 struct ProfileView: View {
     private var profileService = ProfileService.shared
@@ -70,7 +69,7 @@ struct ProfileView: View {
 
             // Info
             Section("Информация") {
-                if let email = auth.session?.user.email {
+                if let email = auth.userEmail {
                     infoRow(icon: "envelope.fill", title: "Email", value: email)
                 }
                 if let phone = profile.phone, !phone.isEmpty {
@@ -78,11 +77,25 @@ struct ProfileView: View {
                 }
             }
 
+            // Change password
+            Section {
+                NavigationLink {
+                    ChangePasswordScreen()
+                } label: {
+                    HStack {
+                        Image(systemName: "lock.rotation")
+                            .foregroundStyle(Color.ravonRed)
+                            .frame(width: 24)
+                        Text("Изменить пароль")
+                    }
+                }
+            }
+
             // Sign out
             Section {
                 Button(role: .destructive) {
                     Task {
-                        await CourierAuth.shared.signOut()
+                        try? await AuthService.shared.signOut()
                     }
                 } label: {
                     HStack {
