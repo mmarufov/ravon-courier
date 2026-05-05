@@ -4,7 +4,6 @@ import RavonCore
 struct ContentView: View {
     @ObservedObject private var auth = AuthService.shared
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
-    private var courierAuth = CourierAuth.shared
 
     var body: some View {
         Group {
@@ -17,7 +16,7 @@ struct ContentView: View {
                     HomeTabView()
                 }
             } else {
-                LoginView(authService: courierAuth)
+                RavonAuthFlow(role: .courier) { }
             }
         }
     }
