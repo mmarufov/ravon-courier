@@ -255,7 +255,7 @@ struct ActiveDeliveryView: View {
             Divider()
 
             HStack {
-                Text("\(order.itemCount) позиц.")
+                Text(order.itemCount.itemsRu)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer()
