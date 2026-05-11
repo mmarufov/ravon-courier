@@ -25,8 +25,16 @@ struct EarningsView: View {
 
                 Section("Последние доставки") {
                     if earningsService.earnings.isEmpty {
-                        Text("Нет доставок за этот период")
-                            .foregroundStyle(.secondary)
+                        VStack(spacing: 8) {
+                            Image(systemName: "tray")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                            Text("Нет доставок за этот период")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
                     } else {
                         ForEach(earningsService.earnings) { earning in
                             earningRow(earning)
