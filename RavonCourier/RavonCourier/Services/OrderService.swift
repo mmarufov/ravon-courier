@@ -7,13 +7,11 @@ import RavonCore
 final class OrderService {
     static let shared = OrderService()
 
-    var availableOrders: [Order] = []
     var activeOrder: Order? {
         didSet {
             CourierLocationStreamer.shared.setActiveOrderStatus(activeOrder?.status)
         }
     }
-    var isLoading = false
     var errorMessage: String?
 
     /// Cooldown state — populated by `refreshCancellationCooldown()` on screen appear.
@@ -53,27 +51,37 @@ final class OrderService {
         }
     }
 
-    // MARK: - Available Orders
+    // MARK: - Offer Feed
 
-    func fetchAvailableOrders() async {
-        isLoading = true
-        errorMessage = nil
+    /// Orders this courier turned down during this app run.
+    ///
+    /// TODO: replace with a server-side `courier_decline_order` RPC (being
+    /// added in ravon-core) that appends to `orders.excluded_courier_ids`.
+    /// Until then nothing records a decline, and `fetch_available_orders`
+    /// returns oldest-first — so without this set the order you just declined
+    /// is the very next offer, forever. Session-scoped only: a relaunch, or a
+    /// second courier device, re-offers it.
+    private var declinedOrderIds: Set<UUID> = []
 
-        do {
-            availableOrders = try await SupabaseService.shared.fetchAvailableOrders()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-
-        isLoading = false
+    func markDeclined(_ order: Order) {
+        declinedOrderIds.insert(order.id)
     }
 
-    func subscribeToAvailableOrders() async {
-        try? await RealtimeService.shared.subscribeToAvailableOrders()
-    }
-
-    func unsubscribeFromAvailableOrders() async {
-        await RealtimeService.shared.unsubscribeFromAvailableOrders()
+    /// The next order to offer this courier, or nil if there is nothing to show.
+    ///
+    /// Uses the proximity-aware `fetch_available_orders` RPC. The no-arg
+    /// overload core labels "for testing / fallback" is a raw table select: it
+    /// skips the radius filter *and* `excluded_courier_ids`, so it offers a
+    /// Dushanbe courier every unassigned order in the country, including ones
+    /// they were explicitly excluded from. Returns nil rather than falling
+    /// back to it when we have no GPS fix yet.
+    func nextOffer() async -> Order? {
+        guard let fix = LocationService.shared.currentLocation else { return nil }
+        let orders = try? await SupabaseService.shared.fetchAvailableOrders(
+            latitude: fix.latitude,
+            longitude: fix.longitude
+        )
+        return orders?.first { !declinedOrderIds.contains($0.id) }
     }
 
     // MARK: - Claim Order
@@ -82,7 +90,6 @@ final class OrderService {
         errorMessage = nil
         _ = try await SupabaseService.shared.claimOrder(orderId: order.id)
         activeOrder = try await SupabaseService.shared.fetchOrder(id: order.id)
-        availableOrders.removeAll { $0.id == order.id }
 
         if let courierId = AuthService.shared.userId {
             try? await RealtimeService.shared.subscribeToCourierOrders(courierId: courierId)

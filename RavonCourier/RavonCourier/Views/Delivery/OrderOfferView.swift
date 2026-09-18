@@ -167,11 +167,11 @@ struct OrderOfferView: View {
 
     private func declineOffer() {
         timer?.invalidate()
+        orderService.markDeclined(order)
         Task {
             dashState = .lookingForOrders
             try? await Task.sleep(for: .seconds(3))
-            let orders = try? await SupabaseService.shared.fetchAvailableOrders()
-            if let next = orders?.first {
+            if let next = await orderService.nextOffer() {
                 dashState = .offerShown(next)
             }
         }
@@ -180,8 +180,7 @@ struct OrderOfferView: View {
     private func fetchNextOffer() {
         Task {
             dashState = .lookingForOrders
-            let orders = try? await SupabaseService.shared.fetchAvailableOrders()
-            if let next = orders?.first {
+            if let next = await orderService.nextOffer() {
                 dashState = .offerShown(next)
             }
         }

@@ -92,8 +92,7 @@ struct HomeView: View {
         .onReceive(RealtimeService.shared.$lastAvailableOrderChange.compactMap { $0 }) { _ in
             guard dashState.isLookingForOrders else { return }
             Task {
-                let orders = try? await SupabaseService.shared.fetchAvailableOrders()
-                if let order = orders?.first {
+                if let order = await orderService.nextOffer() {
                     dashState = .offerShown(order)
                 }
             }
@@ -246,7 +245,7 @@ struct HomeView: View {
     private var lookingBottomBar: some View {
         HStack(spacing: 16) {
             Button {
-                dashState = .paused
+                Task { await pauseShift() }
             } label: {
                 Text("Пауза")
                     .fontWeight(.semibold)
@@ -295,16 +294,8 @@ struct HomeView: View {
             Spacer()
 
             VStack(spacing: 12) {
-                RavonPrimaryButton("Продолжить") {
-                    dashState = .lookingForOrders
-                    Task {
-                        try? await RealtimeService.shared.subscribeToAvailableOrders()
-                        locationService.startUpdating()
-                        let orders = try? await SupabaseService.shared.fetchAvailableOrders()
-                        if let order = orders?.first {
-                            dashState = .offerShown(order)
-                        }
-                    }
+                RavonPrimaryButton("Продолжить", isLoading: isGoingOnline) {
+                    Task { await resumeShift() }
                 }
                 .padding(.horizontal, 32)
 
@@ -328,11 +319,14 @@ struct HomeView: View {
             showOnlineError = true
             return
         }
+        await startShift(restartClock: true)
+    }
+
+    /// Register as online server-side, start the heartbeat, take the first offer.
+    private func startShift(restartClock: Bool) async {
         isGoingOnline = true
         do {
-            locationService.requestPermission()
-            locationService.startUpdating()
-            locationService.setOnline(true)
+            locationService.beginStreaming()
 
             try? await Task.sleep(for: .seconds(0.5))
 
@@ -344,27 +338,43 @@ struct HomeView: View {
             )
 
             try await RealtimeService.shared.subscribeToAvailableOrders()
-            shiftStartTime = Date()
+            if restartClock {
+                shiftStartTime = Date()
+            }
 
-            let available = try await SupabaseService.shared.fetchAvailableOrders()
-            if let firstOrder = available.first {
-                dashState = .offerShown(firstOrder)
+            if let order = await orderService.nextOffer() {
+                dashState = .offerShown(order)
             } else {
                 dashState = .lookingForOrders
             }
         } catch {
-            locationService.setOnline(false)
-            locationService.stopUpdating()
+            locationService.endStreaming()
             onlineErrorMessage = "Не удалось выйти на линию: \(error.localizedDescription)"
             showOnlineError = true
         }
         isGoingOnline = false
     }
 
+    /// Пауза — genuinely offline to dispatch, with the shift clock preserved.
+    ///
+    /// This used to only dim the map: `is_online` stayed true, the heartbeat
+    /// kept flowing and `claim_order` still considered the courier available,
+    /// so offers arrived behind the overlay. A control that looks like it works
+    /// and doesn't is worse than no control.
+    private func pauseShift() async {
+        dashState = .paused
+        try? await SupabaseService.shared.goOffline()
+        locationService.endStreaming()
+        await RealtimeService.shared.unsubscribeFromAvailableOrders()
+    }
+
+    private func resumeShift() async {
+        await startShift(restartClock: false)
+    }
+
     private func goOffline() async {
         try? await SupabaseService.shared.goOffline()
-        locationService.setOnline(false)
-        locationService.stopUpdating()
+        locationService.endStreaming()
         await RealtimeService.shared.unsubscribeFromAvailableOrders()
         shiftStartTime = nil
         dashState = .offline
@@ -376,32 +386,41 @@ struct HomeView: View {
         guard let uid = AuthService.shared.userId else { return }
         do {
             let courierLocation = try await SupabaseService.shared.fetchCourierStatus()
-            if courierLocation.isOnline {
-                if let activeOrder = try await SupabaseService.shared.fetchActiveOrder(courierId: uid) {
-                    orderService.activeOrder = activeOrder
-                    try? await RealtimeService.shared.subscribeToCourierOrders(courierId: uid)
-                    dashState = .activeDelivery(activeOrder)
-                } else if courierLocation.currentOrderId != nil {
-                    // current_order_id set but no active order found (cancelled/delivered)
+            let activeOrder = courierLocation.isOnline
+                ? try await SupabaseService.shared.fetchActiveOrder(courierId: uid)
+                : nil
+            let plan = ShiftRestoration.decide(
+                isOnline: courierLocation.isOnline,
+                hasActiveOrder: activeOrder != nil,
+                hasCurrentOrderId: courierLocation.currentOrderId != nil
+            )
+            plan.apply(to: locationService)
+
+            switch plan {
+            case .stayOffline:
+                return
+
+            case .resumeDelivery:
+                guard let activeOrder else { return }
+                orderService.activeOrder = activeOrder
+                try? await RealtimeService.shared.subscribeToCourierOrders(courierId: uid)
+                shiftStartTime = Date()
+                dashState = .activeDelivery(activeOrder)
+
+            case .clearStaleOrderThenLookForOrders, .lookForOrders:
+                if plan == .clearStaleOrderThenLookForOrders {
+                    // current_order_id set but no active order (cancelled/delivered)
                     try? await SupabaseService.shared.clearCurrentOrder()
-                    locationService.requestPermission()
-                    locationService.startUpdating()
-                    locationService.setOnline(true)
-                    shiftStartTime = Date()
-                    try await RealtimeService.shared.subscribeToAvailableOrders()
-                    dashState = .lookingForOrders
+                }
+                shiftStartTime = Date()
+                try await RealtimeService.shared.subscribeToAvailableOrders()
+                // Give the first GPS fix a moment to land — the offer feed is
+                // proximity-filtered and needs a location.
+                try? await Task.sleep(for: .seconds(0.5))
+                if let order = await orderService.nextOffer() {
+                    dashState = .offerShown(order)
                 } else {
-                    locationService.requestPermission()
-                    locationService.startUpdating()
-                    locationService.setOnline(true)
-                    shiftStartTime = Date()
-                    try await RealtimeService.shared.subscribeToAvailableOrders()
-                    let available = try await SupabaseService.shared.fetchAvailableOrders()
-                    if let order = available.first {
-                        dashState = .offerShown(order)
-                    } else {
-                        dashState = .lookingForOrders
-                    }
+                    dashState = .lookingForOrders
                 }
             }
         } catch {
@@ -417,11 +436,10 @@ struct HomeView: View {
             dashState = .activeDelivery(activeOrder)
             return
         }
-        // Re-subscribe to available orders
+        // Re-subscribe to available orders and make sure the heartbeat is live
         try? await RealtimeService.shared.subscribeToAvailableOrders()
-        locationService.startUpdating()
-        if let orders = try? await SupabaseService.shared.fetchAvailableOrders(),
-           let order = orders.first {
+        locationService.beginStreaming()
+        if let order = await orderService.nextOffer() {
             dashState = .offerShown(order)
         }
     }
@@ -430,10 +448,8 @@ struct HomeView: View {
         dashState = .lookingForOrders
         Task {
             try? await RealtimeService.shared.subscribeToAvailableOrders()
-            locationService.startUpdating()
-            locationService.setOnline(true)
-            let orders = try? await SupabaseService.shared.fetchAvailableOrders()
-            if let order = orders?.first {
+            locationService.beginStreaming()
+            if let order = await orderService.nextOffer() {
                 dashState = .offerShown(order)
             }
         }
